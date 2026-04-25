@@ -1,0 +1,20 @@
+{
+  "name": "livestream-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('.next', { recursive: true, force: true })\"",
+    "dev": "npm run clean && next dev",
+    "build": "next build",
+    "build:clean": "npm run clean && next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "axios": "^1.7.6",
+    "livekit-client": "^2.18.4",
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "socket.io-client": "^4.7.2"
+  }
+}

@@ -1,0 +1,51 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: live-streaming-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - livekit_redis_data:/data
+    networks:
+      - livekit-network
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: live-streaming-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit/livekit.local.yaml --bind 0.0.0.0
+    depends_on:
+      - redis
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    volumes:
+      - ./livekit/livekit.local.yaml:/etc/livekit/livekit.local.yaml:ro
+    networks:
+      - livekit-network
+
+  ingress:
+    image: livekit/ingress:latest
+    container_name: live-streaming-ingress
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - livekit
+    environment:
+      INGRESS_CONFIG_FILE: /etc/livekit/ingress.local.yaml
+    ports:
+      - "1935:1935"
+      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - ./livekit/ingress.local.yaml:/etc/livekit/ingress.local.yaml:ro
+    networks:
+      - livekit-network
+
+volumes:
+  livekit_redis_data:
+
+networks:
+  livekit-network:
+    driver: bridge
