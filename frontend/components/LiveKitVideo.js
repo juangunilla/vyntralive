@@ -14,6 +14,7 @@ export default function LiveKitVideo({
   streamId,
   broadcastMode = 'browser',
   allowGuestPreview = false,
+  joinRequest = null,
 }) {
   const localContainerRef = useRef(null);
   const remoteContainerRef = useRef(null);
@@ -45,9 +46,11 @@ export default function LiveKitVideo({
 
     const initLiveKit = async () => {
       try {
-        const tokenResponse = usePreview
-          ? await api.get(`/streams/${streamId}/preview`)
-          : await api.post('/streams/join', { roomName });
+        const tokenResponse = joinRequest
+          ? await joinRequest()
+          : usePreview
+            ? await api.get(`/streams/${streamId}/preview`)
+            : await api.post('/streams/join', { roomName });
 
         const { token, url: roomUrl, canPublish } = tokenResponse.data;
 
@@ -113,7 +116,7 @@ export default function LiveKitVideo({
         room.disconnect();
       }
     };
-  }, [allowGuestPreview, roomName, streamId]);
+    }, [allowGuestPreview, joinRequest, roomName, streamId]);
 
   const startPublishing = async (room) => {
     try {

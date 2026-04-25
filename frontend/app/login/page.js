@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import api from '../../lib/api';
@@ -29,6 +29,11 @@ export default function LoginPage() {
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [returnTo, setReturnTo] = useState('');
+
+  useEffect(() => {
+    setReturnTo(new URLSearchParams(window.location.search).get('returnTo') || '');
+  }, []);
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -42,7 +47,7 @@ export default function LoginPage() {
     try {
       const response = await api.post('/auth/login', form);
       setSession(response.data);
-      router.push('/streams');
+      router.push(returnTo || '/streams');
     } catch (err) {
       setError(err.response?.data?.message || 'Error al iniciar sesión');
     } finally {

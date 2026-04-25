@@ -10,6 +10,7 @@ const getNumericValue = (value, fallback = 0) => (
 );
 
 const getCreditBalance = (user) => getNumericValue(user?.credits, 0);
+const getReservedPrivateCredits = (user) => getNumericValue(user?.pendingPrivateSessionCredits, 0);
 
 const getDailyCreditStatus = (user) => {
   const lastDailyCreditAt = user?.lastDailyCreditAt ? new Date(user.lastDailyCreditAt) : null;
@@ -50,6 +51,7 @@ const serializePublicUser = (user) => {
     payoutCbu: user?.payoutCbu || '',
     payoutCvu: user?.payoutCvu || '',
     credits: getCreditBalance(user),
+    pendingPrivateSessionCredits: getReservedPrivateCredits(user),
     pendingWithdrawalCredits: getNumericValue(user?.pendingWithdrawalCredits, 0),
     totalCreditsWithdrawn: getNumericValue(user?.totalCreditsWithdrawn, 0),
     totalCreditsEarned: getNumericValue(user?.totalCreditsEarned, getCreditBalance(user)),
@@ -104,6 +106,183 @@ const createCreditEntry = async ({
   referenceStream: referenceStreamId || undefined,
 });
 
+const creditUser = async ({
+  userId,
+  amount,
+  type,
+  description,
+  referenceUserId,
+  referenceStreamId,
+}) => {
+  const normalizedAmount = normalizeCreditAmount(amount);
+  const user = await User.findById(userId);
+
+  if (!user) {
+    const error = new Error('Usuario no encontrado');
+    error.status = 404;
+    throw error;
+  }
+
+  await ensureCreditsInitialized(user);
+
+  user.credits += normalizedAmount;
+  user.totalCreditsEarned = getNumericValue(user.totalCreditsEarned, 0) + normalizedAmount;
+  await user.save();
+
+  const transaction = await createCreditEntry({
+    userId: user._id,
+    type,
+    direction: 'credit',
+    amount: normalizedAmount,
+    balanceAfter: user.credits,
+    description,
+    referenceUserId,
+    referenceStreamId,
+  });
+
+  return { user, transaction, amount: normalizedAmount };
+};
+
+const reservePrivateSessionCredits = async ({
+  userId,
+  amount,
+  description,
+  referenceUserId,
+  referenceStreamId,
+}) => {
+  const normalizedAmount = normalizeCreditAmount(amount);
+  const user = await User.findById(userId);
+
+  if (!user) {
+    const error = new Error('Usuario no encontrado');
+    error.status = 404;
+    throw error;
+  }
+
+  await ensureCreditsInitialized(user);
+
+  if (getCreditBalance(user) < normalizedAmount) {
+    const error = new Error('No tienes créditos suficientes para reservar este privado');
+    error.status = 400;
+    throw error;
+  }
+
+  user.credits -= normalizedAmount;
+  user.pendingPrivateSessionCredits = getReservedPrivateCredits(user) + normalizedAmount;
+  await user.save();
+
+  const transaction = await createCreditEntry({
+    userId: user._id,
+    type: 'private_session_reservation',
+    direction: 'debit',
+    amount: normalizedAmount,
+    balanceAfter: user.credits,
+    description,
+    referenceUserId,
+    referenceStreamId,
+  });
+
+  return { user, transaction, amount: normalizedAmount };
+};
+
+const settlePrivateSessionCredits = async ({
+  viewerId,
+  creatorId,
+  amount,
+  description,
+  referenceStreamId,
+}) => {
+  const normalizedAmount = normalizeCreditAmount(amount);
+  const [viewer, creator] = await Promise.all([
+    User.findById(viewerId),
+    User.findById(creatorId),
+  ]);
+
+  if (!viewer || !creator) {
+    const error = new Error('No se pudo encontrar uno de los usuarios involucrados en el privado');
+    error.status = 404;
+    throw error;
+  }
+
+  await Promise.all([
+    ensureCreditsInitialized(viewer),
+    ensureCreditsInitialized(creator),
+  ]);
+
+  if (getReservedPrivateCredits(viewer) < normalizedAmount) {
+    const error = new Error('No hay créditos reservados suficientes para liquidar el privado');
+    error.status = 400;
+    throw error;
+  }
+
+  viewer.pendingPrivateSessionCredits = getReservedPrivateCredits(viewer) - normalizedAmount;
+  viewer.totalCreditsSpent = getNumericValue(viewer.totalCreditsSpent, 0) + normalizedAmount;
+  creator.credits += normalizedAmount;
+  creator.totalCreditsEarned = getNumericValue(creator.totalCreditsEarned, 0) + normalizedAmount;
+
+  await Promise.all([viewer.save(), creator.save()]);
+
+  const creatorTransaction = await createCreditEntry({
+    userId: creator._id,
+    type: 'private_session_payout',
+    direction: 'credit',
+    amount: normalizedAmount,
+    balanceAfter: creator.credits,
+    description,
+    referenceUserId: viewer._id,
+    referenceStreamId,
+  });
+
+  return {
+    viewer,
+    creator,
+    amount: normalizedAmount,
+    creatorTransaction,
+  };
+};
+
+const refundPrivateSessionCredits = async ({
+  userId,
+  amount,
+  description,
+  referenceUserId,
+  referenceStreamId,
+}) => {
+  const normalizedAmount = normalizeCreditAmount(amount);
+  const user = await User.findById(userId);
+
+  if (!user) {
+    const error = new Error('Usuario no encontrado');
+    error.status = 404;
+    throw error;
+  }
+
+  await ensureCreditsInitialized(user);
+
+  if (getReservedPrivateCredits(user) < normalizedAmount) {
+    const error = new Error('No hay créditos reservados para reembolsar');
+    error.status = 400;
+    throw error;
+  }
+
+  user.pendingPrivateSessionCredits = getReservedPrivateCredits(user) - normalizedAmount;
+  user.credits += normalizedAmount;
+  await user.save();
+
+  const transaction = await createCreditEntry({
+    userId: user._id,
+    type: 'private_session_refund',
+    direction: 'credit',
+    amount: normalizedAmount,
+    balanceAfter: user.credits,
+    description,
+    referenceUserId,
+    referenceStreamId,
+  });
+
+  return { user, transaction, amount: normalizedAmount };
+};
+
 const recordWelcomeCredits = async (user) => (
   createCreditEntry({
     userId: user._id,
@@ -140,6 +319,11 @@ const ensureCreditsInitialized = async (user) => {
 
   if (!Number.isFinite(user.pendingWithdrawalCredits)) {
     user.pendingWithdrawalCredits = 0;
+    changed = true;
+  }
+
+  if (!Number.isFinite(user.pendingPrivateSessionCredits)) {
+    user.pendingPrivateSessionCredits = 0;
     changed = true;
   }
 
@@ -455,9 +639,14 @@ module.exports = {
   recordWelcomeCredits,
   claimDailyCredits,
   grantCreditsToUser,
+  creditUser,
+  reservePrivateSessionCredits,
+  settlePrivateSessionCredits,
+  refundPrivateSessionCredits,
   requestCreditsWithdrawal,
   finalizeCreditsWithdrawal,
   cancelCreditsWithdrawal,
   transferCredits,
   getCreditHistory,
+  getReservedPrivateCredits,
 };

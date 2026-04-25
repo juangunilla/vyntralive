@@ -9,9 +9,11 @@ const { errorHandler } = require('./middlewares/errorHandler');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const streamRoutes = require('./routes/streams');
+const privateSessionRoutes = require('./routes/privateSessions');
 const adminRoutes = require('./routes/admin');
 const reportRoutes = require('./routes/reports');
 const { initChatSocket } = require('./sockets/chat');
+const { startPrivateSessionSweep } = require('./services/privateSessions');
 const { UPLOADS_DIR } = require('./services/uploads');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
@@ -42,11 +44,16 @@ app.get('/health', healthCheck);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/streams', streamRoutes);
+app.use('/api/private-sessions', privateSessionRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/reports', reportRoutes);
 app.use(errorHandler);
 
 initChatSocket(io);
+const privateSessionSweepInterval = startPrivateSessionSweep();
+if (privateSessionSweepInterval.unref) {
+  privateSessionSweepInterval.unref();
+}
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { io } from 'socket.io-client';
 import api from '../../../lib/api';
@@ -17,9 +17,6 @@ const ROOM_TABS = [
 ];
 
 const SOCIAL_UNLOCK_COST = 40;
-const PRIVATE_PRICE_PER_MINUTE = 12;
-const PRIVATE_MIN_MINUTES = 5;
-const PRIVATE_UNLOCK_COST = PRIVATE_PRICE_PER_MINUTE * PRIVATE_MIN_MINUTES;
 const TIP_GOAL_TOTAL = 888;
 const INITIAL_TIP_GOAL = 94;
 const INITIAL_LARGEST_TIP = { name: 'Nina Live', amount: 250 };
@@ -225,6 +222,8 @@ const makeTipMessage = (payload) => {
 
 export default function StreamPage() {
   const params = useParams();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const messagesEndRef = useRef(null);
   const socketRef = useRef(null);
   const seenTipIdsRef = useRef(new Set());
@@ -232,10 +231,11 @@ export default function StreamPage() {
 
   const [stream, setStream] = useState(null);
   const [activeStreams, setActiveStreams] = useState([]);
+  const [privateSessionConfig, setPrivateSessionConfig] = useState(null);
+  const [privateSessions, setPrivateSessions] = useState([]);
   const [messages, setMessages] = useState([]);
-  const [privateThread, setPrivateThread] = useState([]);
   const [message, setMessage] = useState('');
-  const [privateMessage, setPrivateMessage] = useState('');
+  const [privateMinutes, setPrivateMinutes] = useState('5');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('chat');
   const [selectedCategory, setSelectedCategory] = useState('Todos');
@@ -247,10 +247,10 @@ export default function StreamPage() {
   const [viewerCount, setViewerCount] = useState(0);
   const [tipAmount, setTipAmount] = useState('25');
   const [tipping, setTipping] = useState(false);
+  const [privateBusy, setPrivateBusy] = useState(false);
   const [tipMessage, setTipMessage] = useState('');
   const [tipMessageType, setTipMessageType] = useState('');
   const [isFollowing, setIsFollowing] = useState(false);
-  const [privateUnlocked, setPrivateUnlocked] = useState(false);
   const [socialsUnlocked, setSocialsUnlocked] = useState(false);
   const [tipGoalProgress, setTipGoalProgress] = useState(INITIAL_TIP_GOAL);
   const [largestTip, setLargestTip] = useState(INITIAL_LARGEST_TIP);
@@ -261,12 +261,40 @@ export default function StreamPage() {
   const creatorName = stream?.creator?.name || 'Streamer';
   const streamTitle = stream?.title || 'Sala en vivo';
   const isOwnStream = Boolean(currentUserId && creatorId && currentUserId === creatorId);
+  const isStreamCreator = Boolean(user?.role === 'admin' || (currentUserId && creatorId && currentUserId === creatorId));
   const isLive = stream?.status === 'live';
   const canTipCreator = Boolean(user && isLive && !isOwnStream);
-  const canOpenPrivate = Boolean(isFollowing || privateUnlocked || isOwnStream);
+  const privatePricePerMinute = Number(privateSessionConfig?.ratePerMinute || 12);
+  const privateMinMinutes = Number(privateSessionConfig?.minMinutes || 5);
+  const privateUnlockCost = privatePricePerMinute * privateMinMinutes;
   const broadcastMode = stream?.broadcastMode || 'browser';
   const creatorGallery = Array.isArray(stream?.creator?.galleryImages) ? stream.creator.galleryImages : [];
   const canViewCreatorGallery = Boolean(user?.role === 'admin' || isOwnStream);
+  const myPrivateSessions = useMemo(() => (
+    privateSessions.filter((session) => {
+      if (!currentUserId) return false;
+      const sessionCreatorId = session?.creator?._id || session?.creator?.id;
+      const sessionViewerId = session?.viewer?._id || session?.viewer?.id;
+      return sessionCreatorId === currentUserId || sessionViewerId === currentUserId;
+    })
+  ), [currentUserId, privateSessions]);
+  const pendingPrivateSessions = useMemo(() => (
+    privateSessions.filter((session) => session?.status === 'pending')
+  ), [privateSessions]);
+  const currentPrivateSession = useMemo(() => (
+    myPrivateSessions.find((session) => session?.status === 'active')
+      || myPrivateSessions.find((session) => session?.status === 'confirmed')
+      || myPrivateSessions.find((session) => session?.status === 'pending')
+      || null
+  ), [myPrivateSessions]);
+  const currentPrivateSessionCreatorId = currentPrivateSession?.creator?._id || currentPrivateSession?.creator?.id;
+  const currentPrivateSessionViewerId = currentPrivateSession?.viewer?._id || currentPrivateSession?.viewer?.id;
+  const canEnterPrivateRoom = Boolean(
+    currentPrivateSession
+    && ['confirmed', 'active'].includes(currentPrivateSession.status)
+    && currentUserId
+    && (currentPrivateSessionCreatorId === currentUserId || currentPrivateSessionViewerId === currentUserId),
+  );
 
   useEffect(() => {
     const syncUser = async () => {
@@ -293,12 +321,18 @@ export default function StreamPage() {
   }, []);
 
   useEffect(() => {
+    const requestedTab = searchParams.get('tab');
+    if (requestedTab && ROOM_TABS.some((tab) => tab.id === requestedTab)) {
+      setActiveTab(requestedTab);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const fetchStream = async () => {
       setLoading(true);
       setMessages([]);
-      setPrivateThread([]);
       setViewerCount(0);
       setTipGoalProgress(INITIAL_TIP_GOAL);
       setLargestTip(INITIAL_LARGEST_TIP);
@@ -313,12 +347,22 @@ export default function StreamPage() {
 
         if (cancelled) return;
 
+        if (streamResponse.data?.status !== 'live') {
+          router.replace('/streams');
+          return;
+        }
+
         setStream(streamResponse.data);
         setViewerCount(Number(streamResponse.data?.viewers || 0));
         setActiveStreams(Array.isArray(activeResponse.data) ? activeResponse.data : []);
       } catch (error) {
-        console.error('Error fetching stream:', error);
         if (!cancelled) {
+          if (error.response?.status === 404) {
+            router.replace('/streams');
+            return;
+          }
+
+          console.error('Error fetching stream:', error);
           setStream(null);
         }
       } finally {
@@ -336,6 +380,41 @@ export default function StreamPage() {
   }, [params.id]);
 
   useEffect(() => {
+    if (!stream?._id || typeof window === 'undefined') return undefined;
+
+    let cancelled = false;
+
+    const loadPrivatePanel = async () => {
+      try {
+        const [privateConfigResponse, privateSessionsResponse] = await Promise.all([
+          api.get('/private-sessions/config').catch(() => ({ data: null })),
+          user
+            ? api.get(`/private-sessions/streams/${stream._id}`).catch(() => ({ data: { sessions: [] } }))
+            : Promise.resolve({ data: { sessions: [] } }),
+        ]);
+
+        if (cancelled) return;
+
+        setPrivateSessionConfig(privateConfigResponse.data || null);
+        setPrivateMinutes(String(privateConfigResponse.data?.minMinutes || 5));
+        setPrivateSessions(Array.isArray(privateSessionsResponse.data?.sessions)
+          ? privateSessionsResponse.data.sessions
+          : []);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Error loading private panel:', error);
+        }
+      }
+    };
+
+    loadPrivatePanel();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stream?._id, user?.id]);
+
+  useEffect(() => {
     if (!stream?._id || typeof window === 'undefined') return;
 
     try {
@@ -348,9 +427,6 @@ export default function StreamPage() {
       }
       if (typeof storedState.following === 'boolean') {
         setIsFollowing(storedState.following);
-      }
-      if (typeof storedState.privateUnlocked === 'boolean') {
-        setPrivateUnlocked(storedState.privateUnlocked);
       }
       if (typeof storedState.socialsUnlocked === 'boolean') {
         setSocialsUnlocked(storedState.socialsUnlocked);
@@ -369,11 +445,10 @@ export default function StreamPage() {
         activeTab,
         selectedCategory,
         following: isFollowing,
-        privateUnlocked,
         socialsUnlocked,
       }),
     );
-  }, [stream?._id, activeTab, selectedCategory, isFollowing, privateUnlocked, socialsUnlocked]);
+  }, [stream?._id, activeTab, selectedCategory, isFollowing, socialsUnlocked]);
 
   useEffect(() => {
     if (!stream?._id || !isLive) return undefined;
@@ -382,18 +457,23 @@ export default function StreamPage() {
 
     const verifyStreamIsStillLive = async () => {
       try {
-        await api.get(`/streams/${stream._id}`);
+        const response = await api.get(`/streams/${stream._id}`);
+        if (cancelled) return;
+
+        if (response.data?.status !== 'live') {
+          setSocketConnected(false);
+          setTipMessage('La room se cerró porque el streamer se desconectó.');
+          setTipMessageType('warning');
+          setViewerCount(0);
+          setStream((current) => (current ? { ...current, status: 'offline', viewers: 0 } : current));
+          window.setTimeout(() => {
+            window.location.replace('/streams');
+          }, 100);
+        }
       } catch (error) {
         if (cancelled) return;
 
-        setSocketConnected(false);
-        setTipMessage('La room se cerró porque el streamer se desconectó.');
-        setTipMessageType('warning');
-        setViewerCount(0);
-        setStream((current) => (current ? { ...current, status: 'offline', viewers: 0 } : current));
-        window.setTimeout(() => {
-          window.location.replace('/streams');
-        }, 100);
+        console.error('Error verifying stream status:', error);
       }
     };
 
@@ -457,10 +537,6 @@ export default function StreamPage() {
       if (tip.amount >= SOCIAL_UNLOCK_COST) {
         setSocialsUnlocked(true);
       }
-
-      if (tip.amount >= PRIVATE_UNLOCK_COST) {
-        setPrivateUnlocked(true);
-      }
     };
 
     const handleRoomEnded = (payload) => {
@@ -519,8 +595,27 @@ export default function StreamPage() {
   }, [stream?._id, currentUserId, isLive, sessionReady, user?.name]);
 
   useEffect(() => {
+    if (!stream?._id || !sessionReady || !user) return undefined;
+
+    let cancelled = false;
+
+    const syncPrivateSessions = async () => {
+      if (cancelled) return;
+      await refreshPrivateSessions();
+    };
+
+    syncPrivateSessions();
+    const intervalId = window.setInterval(syncPrivateSessions, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [stream?._id, sessionReady, user?.id]);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, privateThread]);
+  }, [messages]);
 
   const discoveryRooms = useMemo(() => buildDiscoveryRooms(stream, activeStreams), [stream, activeStreams]);
   const discoveryCategories = useMemo(() => {
@@ -627,10 +722,6 @@ export default function StreamPage() {
     if (tip.amount >= SOCIAL_UNLOCK_COST) {
       setSocialsUnlocked(true);
     }
-
-    if (tip.amount >= PRIVATE_UNLOCK_COST) {
-      setPrivateUnlocked(true);
-    }
   };
 
   const handleTip = async (amount) => {
@@ -698,27 +789,6 @@ export default function StreamPage() {
     setTipMessageType('success');
   };
 
-  const handlePrivateAccess = async () => {
-    if (!user) {
-      setTipMessage('Inicia sesión para solicitar un privado');
-      setTipMessageType('error');
-      return;
-    }
-
-    if (isFollowing || isOwnStream) {
-      setTipMessage('Privado habilitado por seguir la room');
-      setTipMessageType('success');
-      return;
-    }
-
-    const success = await handleTip(PRIVATE_UNLOCK_COST);
-    if (success) {
-      setPrivateUnlocked(true);
-      setTipMessage('Privado desbloqueado por fichas');
-      setTipMessageType('success');
-    }
-  };
-
   const handleSocialUnlock = async () => {
     if (!user) {
       setTipMessage('Inicia sesión para desbloquear redes');
@@ -745,27 +815,160 @@ export default function StreamPage() {
     }
   };
 
-  const handlePrivateSend = () => {
-    if (!canOpenPrivate || !privateMessage.trim()) {
-      if (!canOpenPrivate) {
-        handlePrivateAccess();
-      }
+  const updatePrivateSessionList = (nextSession) => {
+    if (!nextSession) return;
+
+    setPrivateSessions((current) => {
+      const nextId = nextSession.id || nextSession._id;
+      const filtered = current.filter((session) => (session.id || session._id) !== nextId);
+      return [nextSession, ...filtered];
+    });
+  };
+
+  const refreshPrivateSessions = async () => {
+    if (!stream?._id || !user) {
       return;
     }
 
-    setPrivateThread((current) => [
-      ...current,
-      {
-        id: `private-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        kind: 'own',
-        name: user?.name || 'Tú',
-        text: privateMessage.trim(),
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    setPrivateMessage('');
-    setTipMessage('Mensaje privado enviado');
-    setTipMessageType('success');
+    try {
+      const response = await api.get(`/private-sessions/streams/${stream._id}`);
+      if (Array.isArray(response.data?.sessions)) {
+        setPrivateSessions(response.data.sessions);
+      }
+    } catch (error) {
+      console.error('Error refreshing private sessions:', error);
+    }
+  };
+
+  const handlePrivateRequest = async () => {
+    if (!user) {
+      setTipMessage('Inicia sesión para reservar un privado');
+      setTipMessageType('error');
+      router.push(`/login?returnTo=${encodeURIComponent(`/stream/${params.id}?tab=private`)}`);
+      return;
+    }
+
+    const requestedMinutes = Number(privateMinutes);
+    if (!Number.isInteger(requestedMinutes) || requestedMinutes < privateMinMinutes) {
+      setTipMessage(`El privado requiere al menos ${privateMinMinutes} minutos`);
+      setTipMessageType('error');
+      return;
+    }
+
+    setPrivateBusy(true);
+    try {
+      const response = await api.post(`/private-sessions/streams/${params.id}/request`, {
+        minutes: requestedMinutes,
+      });
+
+      if (response.data?.user) {
+        setStoredUser(response.data.user);
+        setUser(response.data.user);
+      }
+
+      if (response.data?.session) {
+        updatePrivateSessionList(response.data.session);
+      }
+
+      setTipMessage(response.data?.message || 'Privado reservado');
+      setTipMessageType('success');
+      setActiveTab('private');
+    } catch (error) {
+      setTipMessage(error.response?.data?.message || 'No se pudo reservar el privado');
+      setTipMessageType('error');
+    } finally {
+      setPrivateBusy(false);
+    }
+  };
+
+  const handlePrivateConfirm = async (sessionId) => {
+    setPrivateBusy(true);
+    try {
+      const response = await api.post(`/private-sessions/${sessionId}/confirm`);
+      if (response.data?.session) {
+        updatePrivateSessionList(response.data.session);
+      }
+      setTipMessage(response.data?.message || 'Privado confirmado');
+      setTipMessageType('success');
+      await refreshPrivateSessions();
+    } catch (error) {
+      setTipMessage(error.response?.data?.message || 'No se pudo confirmar el privado');
+      setTipMessageType('error');
+    } finally {
+      setPrivateBusy(false);
+    }
+  };
+
+  const handlePrivateReject = async (sessionId) => {
+    setPrivateBusy(true);
+    try {
+      const response = await api.post(`/private-sessions/${sessionId}/reject`);
+      if (response.data?.session) {
+        updatePrivateSessionList(response.data.session);
+      }
+      setTipMessage(response.data?.message || 'Privado rechazado');
+      setTipMessageType('warning');
+      await refreshPrivateSessions();
+    } catch (error) {
+      setTipMessage(error.response?.data?.message || 'No se pudo rechazar el privado');
+      setTipMessageType('error');
+    } finally {
+      setPrivateBusy(false);
+    }
+  };
+
+  const handlePrivateCancel = async (sessionId) => {
+    setPrivateBusy(true);
+    try {
+      const response = await api.post(`/private-sessions/${sessionId}/cancel`);
+      if (response.data?.session) {
+        updatePrivateSessionList(response.data.session);
+      }
+      setTipMessage(response.data?.message || 'Privado cancelado');
+      setTipMessageType('warning');
+      await refreshPrivateSessions();
+    } catch (error) {
+      setTipMessage(error.response?.data?.message || 'No se pudo cancelar el privado');
+      setTipMessageType('error');
+    } finally {
+      setPrivateBusy(false);
+    }
+  };
+
+  const handleOpenPrivateCall = (sessionId) => {
+    router.push(`/private/${sessionId}`);
+  };
+
+  const handlePrivateShortcut = () => {
+    if (!user) {
+      router.push(`/login?returnTo=${encodeURIComponent(`/stream/${params.id}?tab=private`)}`);
+      return;
+    }
+
+    if (canEnterPrivateRoom && currentPrivateSession) {
+      handleOpenPrivateCall(currentPrivateSession.id || currentPrivateSession._id);
+      return;
+    }
+
+    setActiveTab('private');
+  };
+
+  const handlePrivateEnd = async (sessionId) => {
+    setPrivateBusy(true);
+    try {
+      const response = await api.post(`/private-sessions/${sessionId}/end`);
+      if (response.data?.session) {
+        updatePrivateSessionList(response.data.session);
+      }
+      setTipMessage(response.data?.message || 'Privado finalizado');
+      setTipMessageType('success');
+      await refreshPrivateSessions();
+    } catch (error) {
+      setTipMessage(error.response?.data?.message || 'No se pudo finalizar el privado');
+      setTipMessageType('error');
+    } finally {
+      setPrivateBusy(false);
+    }
   };
 
   const copyRoomLink = async () => {
@@ -1095,10 +1298,10 @@ export default function StreamPage() {
                   <div className="section-heading">
                     <div>
                       <span className="page-kicker">🔒 Privados</span>
-                      <h3>Mensajes uno a uno</h3>
+                      <h3>Videollamada 1 a 1</h3>
                     </div>
                     <span className="info-chip">
-                      {canOpenPrivate ? 'Acceso abierto' : 'Bloqueado'}
+                      {currentPrivateSession ? currentPrivateSession.status : 'Disponible'}
                     </span>
                   </div>
 
@@ -1106,71 +1309,207 @@ export default function StreamPage() {
                     <div className="credit-grid compact-grid">
                       <div className="credit-card">
                         <span>Precio por minuto</span>
-                        <strong className="credit-value">{PRIVATE_PRICE_PER_MINUTE}</strong>
+                        <strong className="credit-value">{privatePricePerMinute}</strong>
                       </div>
                       <div className="credit-card">
                         <span>Mínimo de minutos</span>
-                        <strong className="credit-value">{PRIVATE_MIN_MINUTES}</strong>
+                        <strong className="credit-value">{privateMinMinutes}</strong>
+                      </div>
+                      <div className="credit-card">
+                        <span>Reserva total</span>
+                        <strong className="credit-value">{formatCount(privateUnlockCost)}</strong>
                       </div>
                       <div className="credit-card">
                         <span>Saldo del usuario</span>
                         <strong className="credit-value">{user ? formatCount(user.credits || 0) : '0'}</strong>
-                      </div>
-                      <div className="credit-card">
-                        <span>Estado</span>
-                        <strong className="credit-value">{canOpenPrivate ? 'ON' : 'LOCK'}</strong>
                       </div>
                     </div>
 
                     <div className="room-private-lock">
                       <strong>Regla de acceso</strong>
                       <p>
-                        El mensaje privado solo se habilita si seguís la room o si desbloqueás el acceso con fichas.
+                        La videollamada queda bloqueada hasta que el backend confirme la reserva y la sala sólo acepta 2 participantes.
                       </p>
                       <p>
-                        {isFollowing
-                          ? 'Ya seguís la room, así que el privado quedó abierto.'
-                          : `Solicitalo con ${PRIVATE_UNLOCK_COST} fichas o seguí la room para abrirlo sin pagar.`}
+                        {privateSessionConfig
+                          ? `Se cobra ${privatePricePerMinute} fichas por minuto con mínimo de ${privateMinMinutes} minutos.`
+                          : 'Cargando configuración del privado...'}
                       </p>
                     </div>
                   </div>
 
-                  <div className="room-private-form">
-                    <textarea
-                      className="form-input"
-                      placeholder={canOpenPrivate ? 'Escribe tu mensaje privado...' : 'Primero solicitá el privado para escribir acá.'}
-                      value={privateMessage}
-                      onChange={(event) => setPrivateMessage(event.target.value)}
-                      disabled={!canOpenPrivate}
-                      rows={5}
-                    />
+                  {user ? (
+                    <div className="room-private-form">
+                      <div className="room-private-request-row">
+                        <label className="room-search-box" style={{ flex: 1 }}>
+                          <span className="room-search-label">Minutos</span>
+                          <input
+                            type="number"
+                            min={privateMinMinutes}
+                            step="1"
+                            className="form-input room-search-input"
+                            value={privateMinutes}
+                            onChange={(event) => setPrivateMinutes(event.target.value)}
+                            disabled={privateBusy || Boolean(currentPrivateSession && ['pending', 'confirmed', 'active'].includes(currentPrivateSession.status))}
+                          />
+                        </label>
 
-                    <div className="room-cta-row">
-                      <button
-                        type="button"
-                        className={`btn ${canOpenPrivate ? 'btn-primary' : 'btn-success'}`}
-                        onClick={handlePrivateSend}
-                        disabled={tipping}
-                      >
-                        {canOpenPrivate ? '✉️ Enviar privado' : `🔓 Solicitar privado · ${PRIVATE_UNLOCK_COST} fichas`}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="room-private-thread">
-                    {privateThread.length === 0 ? (
-                      <div className="profile-empty-box">
-                        Todavía no enviaste mensajes privados.
+                        <button
+                          type="button"
+                          className="btn btn-success"
+                          onClick={handlePrivateRequest}
+                          disabled={privateBusy || !isLive || Boolean(currentPrivateSession && ['pending', 'confirmed', 'active'].includes(currentPrivateSession.status))}
+                        >
+                          {privateBusy ? 'Procesando...' : `Reservar privado · ${privateUnlockCost} fichas`}
+                        </button>
                       </div>
-                    ) : (
-                      privateThread.map((entry) => (
-                        <div key={entry.id} className={`chat-message ${entry.kind === 'own' ? 'own' : 'other'}`}>
-                          <strong>{entry.name}:</strong>
-                          {entry.text}
+
+                      <p className="page-subtitle">
+                        El backend reserva el turno, confirma la sala y descuenta el saldo minuto a minuto mientras la videollamada esté activa.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="chat-auth-prompt">
+                      <p style={{ color: '#718096', textAlign: 'center', margin: 0 }}>
+                        🔐 <Link href="/login" className="inline-link">Inicia sesión</Link> para reservar una videollamada privada.
+                      </p>
+                    </div>
+                  )}
+
+                  {currentPrivateSession && (
+                    <div className="credit-action-card">
+                      <span className="page-kicker">Mi turno</span>
+                      <h3>
+                        {currentPrivateSession.status === 'active'
+                          ? 'Videollamada en curso'
+                          : currentPrivateSession.status === 'confirmed'
+                            ? 'Privado confirmado'
+                            : 'Reserva pendiente'}
+                      </h3>
+                      <p>
+                        {currentPrivateSession.status === 'active'
+                          ? 'El reloj ya está corriendo por minuto.'
+                          : 'Esperando la confirmación del backend o del creador para abrir la sala.'}
+                      </p>
+
+                      <div className="credit-grid compact-grid">
+                        <div className="credit-card">
+                          <span>Minutos</span>
+                          <strong className="credit-value">{formatCount(currentPrivateSession.requestedMinutes)}</strong>
                         </div>
-                      ))
-                    )}
-                  </div>
+                        <div className="credit-card">
+                          <span>Cobrados</span>
+                          <strong className="credit-value">{formatCount(currentPrivateSession.billedMinutes)}</strong>
+                        </div>
+                        <div className="credit-card">
+                          <span>Reservados</span>
+                          <strong className="credit-value">{formatCount(currentPrivateSession.reservedCredits)}</strong>
+                        </div>
+                        <div className="credit-card">
+                          <span>Estado</span>
+                          <strong className="credit-value">{currentPrivateSession.status}</strong>
+                        </div>
+                      </div>
+
+                      <div className="room-cta-row">
+                        {canEnterPrivateRoom && (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => handleOpenPrivateCall(currentPrivateSession.id || currentPrivateSession._id)}
+                          >
+                            🎥 Abrir videollamada
+                          </button>
+                        )}
+
+                        {currentPrivateSession.status === 'pending' && currentUserId === (currentPrivateSession.viewer?._id || currentPrivateSession.viewer?.id) && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => handlePrivateCancel(currentPrivateSession.id || currentPrivateSession._id)}
+                            disabled={privateBusy}
+                          >
+                            Cancelar reserva
+                          </button>
+                        )}
+
+                        {currentPrivateSession.status === 'active' && currentUserId === (currentPrivateSession.creator?._id || currentPrivateSession.creator?.id) && (
+                          <button
+                            type="button"
+                            className="btn btn-success"
+                            onClick={() => handlePrivateEnd(currentPrivateSession.id || currentPrivateSession._id)}
+                            disabled={privateBusy}
+                          >
+                            Finalizar privado
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {isStreamCreator && (
+                    <div className="card" style={{ marginTop: '1rem' }}>
+                      <div className="section-heading">
+                        <div>
+                          <span className="page-kicker">📥 Turnos pendientes</span>
+                          <h3>Reservas esperando confirmación</h3>
+                        </div>
+                        <span className="info-chip">{pendingPrivateSessions.length}</span>
+                      </div>
+
+                      {pendingPrivateSessions.length === 0 ? (
+                        <div className="profile-empty-box">
+                          No hay reservas esperando aprobación ahora mismo.
+                        </div>
+                      ) : (
+                        <div className="profile-list">
+                          {pendingPrivateSessions.map((session) => {
+                            const sessionId = session.id || session._id;
+                            return (
+                              <div key={sessionId} className="profile-list-item" style={{ display: 'grid', gap: '0.75rem' }}>
+                                <div>
+                                  <strong>{session.viewer?.name || 'Usuario'}</strong>
+                                  <div style={{ color: '#718096', fontSize: '0.92rem' }}>
+                                    {formatCount(session.requestedMinutes)} min · {formatCount(session.ratePerMinute)} fichas/min · {formatCount(session.totalCredits)} fichas
+                                  </div>
+                                  <div style={{ color: '#718096', fontSize: '0.92rem' }}>
+                                    Estado: {session.status}
+                                  </div>
+                                </div>
+
+                                <div className="room-cta-row">
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    onClick={() => handlePrivateConfirm(sessionId)}
+                                    disabled={privateBusy}
+                                  >
+                                    Confirmar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={() => handlePrivateReject(sessionId)}
+                                    disabled={privateBusy}
+                                  >
+                                    Rechazar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-success"
+                                    onClick={() => handleOpenPrivateCall(sessionId)}
+                                    disabled={!['confirmed', 'active'].includes(session.status)}
+                                  >
+                                    Abrir sala
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1555,10 +1894,10 @@ export default function StreamPage() {
                   <button
                     type="button"
                     className="btn btn-success"
-                    onClick={handlePrivateAccess}
+                    onClick={handlePrivateShortcut}
                     disabled={!isLive || tipping}
                   >
-                    🔒 Solicitar privado
+                    {canEnterPrivateRoom ? '🎥 Entrar al privado' : user ? '🔒 Reservar privado' : '🔐 Entrar para reservar'}
                   </button>
                 </div>
               </div>

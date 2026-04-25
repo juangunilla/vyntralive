@@ -186,9 +186,6 @@ const getStreamById = async (req, res, next) => {
     if (!stream) {
       return res.status(404).json({ message: 'Transmisión no encontrada' });
     }
-    if (stream.status !== 'live') {
-      return res.status(404).json({ message: 'La transmisión ya terminó' });
-    }
     res.json(stream);
   } catch (error) {
     next(error);

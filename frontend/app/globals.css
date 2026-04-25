@@ -1496,14 +1496,22 @@ select.form-input {
   gap: 0.75rem;
 }
 
-.brand-dot {
+.brand-mark {
   display: grid;
   place-items: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 14px;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 16px;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   box-shadow: 0 12px 28px rgba(0, 199, 210, 0.2);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .brand-copy {
@@ -1514,7 +1522,7 @@ select.form-input {
 
 .brand-copy strong {
   font-family: var(--font-display), sans-serif;
-  font-size: 1.05rem;
+  font-size: 1.15rem;
   line-height: 1;
 }
 
@@ -1522,7 +1530,7 @@ select.form-input {
   color: var(--ink-soft);
   text-transform: uppercase;
   letter-spacing: 0.14em;
-  font-size: 0.62rem;
+  font-size: 0.68rem;
 }
 
 .topbar-nav,
@@ -2345,14 +2353,58 @@ select.form-input {
   gap: 0.8rem;
 }
 
-.room-private-form textarea {
-  min-height: 120px;
-  resize: vertical;
+.room-private-request-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
 }
 
 .room-private-thread {
   display: grid;
   gap: 0.75rem;
+}
+
+.room-private-request-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.private-call-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.private-call-header {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 1.1rem 1.15rem;
+}
+
+.private-call-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: flex-end;
+}
+
+.private-call-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 0.9fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.private-call-video-card {
+  min-height: 640px;
+  padding: 0.85rem;
+}
+
+.private-call-sidebar {
+  display: grid;
+  gap: 1rem;
 }
 
 .room-token-actions {
@@ -2737,6 +2789,21 @@ select.form-input {
   .room-discovery-shell,
   .room-sidebar-card {
     padding: 0.9rem;
+  }
+
+  .room-private-request-row,
+  .private-call-grid,
+  .private-call-header {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .private-call-actions {
+    justify-content: flex-start;
+  }
+
+  .private-call-video-card {
+    min-height: 420px;
   }
 
   .room-stage-media {

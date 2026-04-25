@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import api from '../lib/api';
 import { clearSession, getStoredUser, setStoredUser } from '../lib/session';
@@ -57,10 +58,19 @@ export default function TopbarClient() {
   return (
     <div className="site-topbar-inner">
       <Link href="/" className="brand-lockup">
-        <span className="brand-dot">🔴</span>
+        <span className="brand-mark">
+          <Image
+            src="/logo.jpeg"
+            alt="Logo de Vyntra Live"
+            width={64}
+            height={64}
+            sizes="64px"
+            priority
+          />
+        </span>
         <span className="brand-copy">
-          <strong>LiveRoom</strong>
-          <small>cam platform vibe</small>
+          <strong>Vyntra Live</strong>
+          <small>Streaming en vivo</small>
         </span>
       </Link>
 

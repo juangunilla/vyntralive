@@ -13,8 +13,12 @@ const displayFont = Space_Grotesk({
 });
 
 export const metadata = {
-  title: 'LiveStream Platform',
+  title: 'Vyntra Live',
   description: 'Plataforma de streaming en vivo con chat en tiempo real',
+  icons: {
+    icon: '/logo.jpeg',
+    apple: '/logo.jpeg',
+  },
 };
 
 export default function RootLayout({ children }) {

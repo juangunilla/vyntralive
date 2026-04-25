@@ -21,6 +21,7 @@ const userSchema = new mongoose.Schema(
     payoutCbu: { type: String, trim: true, default: '' },
     payoutCvu: { type: String, trim: true, default: '' },
     credits: { type: Number, default: 0, min: 0 },
+    pendingPrivateSessionCredits: { type: Number, default: 0, min: 0 },
     pendingWithdrawalCredits: { type: Number, default: 0, min: 0 },
     totalCreditsWithdrawn: { type: Number, default: 0, min: 0 },
     totalCreditsEarned: { type: Number, default: 0, min: 0 },
